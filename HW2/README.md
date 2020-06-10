@@ -2,6 +2,8 @@
 
 This project is a simple DBMS implemented using C, as the education material of the Introduction to Database Systems in National Chiao Tung University
 
+https://docs.google.com/document/d/18kPGkayUMcxQ3DIlVjc1kc9HrcOLn7YLP72nNpRSUFM/edit
+
 ## Prerequisite
 
 * make >= 4.1
