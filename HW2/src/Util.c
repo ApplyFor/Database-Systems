@@ -1,0 +1,289 @@
+#include <stdio.h>
+#include <stdio_ext.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <fcntl.h>
+#include "Util.h"
+#include "Command.h"
+#include "Table.h"
+
+///
+/// Allocate State_t and initialize some attributes
+/// Return: ptr of new State_t
+///
+State_t* new_State() {
+    State_t *state = (State_t*)malloc(sizeof(State_t));
+    state->saved_stdout = -1;
+    return state;
+}
+
+///
+/// Print shell prompt
+///
+void print_prompt(State_t *state) {
+    if (state->saved_stdout == -1) {
+        printf("db > ");
+    }
+}
+
+///
+/// Print the user in the specific format
+///
+void print_user(User_t *user) {
+    printf("(%d, %s, %s, %d)\n", user->id, user->name, user->email, user->age);
+}
+
+void print_projection(User_t *user,int a[],int max)
+{
+    int idx,num=1;
+    
+    printf("(");
+    while(num<max)
+    {
+        idx=0;
+        for(idx=0;idx<4;idx++)
+        {
+            if(a[idx]==num)
+            {
+                if(idx==0)
+                    printf("%d",user->id);
+                else if(idx==1)
+                    printf("%s",user->name);
+                else if(idx==2)
+                    printf("%s",user->email);
+                else
+                    printf("%d",user->age);
+
+                if(num<max-1)
+                    printf(", ");
+
+                num++;
+             }
+        }
+    }
+    printf(")\n");
+}
+
+///
+/// This function received an output argument
+/// Return: category of the command
+///
+int parse_input(char *input, Command_t *cmd) {
+    char *token;
+    int idx;
+    token = strtok(input, " \n");
+    for (idx = 0; strlen(cmd_list[idx].name) != 0; idx++) {
+        if (!strncmp(token, cmd_list[idx].name, cmd_list[idx].len)) {
+            cmd->type = cmd_list[idx].type;
+        }
+    }
+    while (token != NULL) {
+        add_Arg(cmd, token);
+        token = strtok(NULL, " \n");
+    }
+    return cmd->type;
+}
+
+///
+/// Handle built-in commands
+/// Return: command type
+///
+void handle_builtin_cmd(Table_t *table, Command_t *cmd, State_t *state) {
+    if (!strncmp(cmd->args[0], ".exit", 5)) {
+        archive_table(table);
+        exit(0);
+    } else if (!strncmp(cmd->args[0], ".output", 7)) {
+        if (cmd->args_len == 2) {
+            if (!strncmp(cmd->args[1], "stdout", 6)) {
+                close(1);
+                dup2(state->saved_stdout, 1);
+                state->saved_stdout = -1;
+            } else if (state->saved_stdout == -1) {
+                int fd = creat(cmd->args[1], 0644);
+                state->saved_stdout = dup(1);
+                if (dup2(fd, 1) == -1) {
+                    state->saved_stdout = -1;
+                }
+                __fpurge(stdout); //This is used to clear the stdout buffer
+            }
+        }
+    } else if (!strncmp(cmd->args[0], ".load", 5)) {
+        if (cmd->args_len == 2) {
+            load_table(table, cmd->args[1]);
+        }
+    } else if (!strncmp(cmd->args[0], ".help", 5)) {
+        print_help_msg();
+    }
+}
+
+///
+/// Handle query type commands
+/// Return: command type
+///
+int handle_query_cmd(Table_t *table, Command_t *cmd) {
+    if (!strncmp(cmd->args[0], "insert", 6)) {
+        handle_insert_cmd(table, cmd);
+        return INSERT_CMD;
+    } else if (!strncmp(cmd->args[0], "select", 6)) {
+        handle_select_cmd(table, cmd);
+        return SELECT_CMD;
+    } else {
+        return UNRECOG_CMD;
+    }
+}
+
+///
+/// The return value is the number of rows insert into table
+/// If the insert operation success, then change the input arg
+/// `cmd->type` to INSERT_CMD
+///
+int handle_insert_cmd(Table_t *table, Command_t *cmd) {
+    int ret = 0;
+    User_t *user = command_to_User(cmd);
+    if (user) {
+        ret = add_User(table, user);
+        if (ret > 0) {
+            cmd->type = INSERT_CMD;
+        }
+    }
+    return ret;
+}
+
+///
+/// The return value is the number of rows select from table
+/// If the select operation success, then change the input arg
+/// `cmd->type` to SELECT_CMD
+///
+int handle_select_cmd(Table_t *table, Command_t *cmd) {
+    size_t idx;
+    int num,offset=0,limit=table->len,len;
+    int format[4];
+
+    for(num=0;num<4;num++)
+        format[num]=0;
+
+    if(!strncmp(cmd->args[1],"*",1))
+    {
+	if(cmd->args_len>4)
+	{
+            for(num=3;num<cmd->args_len;num++)
+	    {
+		if(!strncmp(cmd->args[num],"table",5))
+		{
+	            len=num+1;
+		    break;
+		}
+	    }
+
+	    if(len<cmd->args_len && !strncmp(cmd->args[len],"offset",6))
+	    {
+		offset=atoi(cmd->args[len+1]);
+		len+=2;
+		if(len<cmd->args_len)
+		{
+		    if(!strncmp(cmd->args[len],"limit",5))
+			limit=atoi(cmd->args[len+1]);
+		}
+	    }
+	    if(len<cmd->args_len &&  !strncmp(cmd->args[len],"limit",5))
+		limit=atoi(cmd->args[len+1]);
+
+	    if(limit!=table->len)
+		limit+=offset;
+	}
+
+        for (idx = offset; idx < limit; idx++) {
+            print_user(get_User(table, idx));
+        }
+    }
+    else
+    {
+        for(num=1;num<cmd->args_len;num++)
+        {
+            if(!strncmp(cmd->args[num],"from",4))
+	    {
+		len=num+2;
+                break;
+	    }
+            if(!strncmp(cmd->args[num],"id",2))
+                format[0]=num;
+            if(!strncmp(cmd->args[num],"name",4))
+                format[1]=num;
+            if(!strncmp(cmd->args[num],"email",5))
+                format[2]=num;
+            if(!strncmp(cmd->args[num],"age",3))
+                format[3]=num;
+        }
+
+	if(len<cmd->args_len && !strncmp(cmd->args[len],"offset",6))
+        {
+	    offset=atoi(cmd->args[len+1]);
+            len+=2;
+            if(len<cmd->args_len)
+	    {
+	        if(!strncmp(cmd->args[len],"limit",5))
+	            limit=atoi(cmd->args[len+1]);
+	    }
+	}
+	if(len<cmd->args_len &&  !strncmp(cmd->args[len],"limit",5))
+	    limit=atoi(cmd->args[len+1]);
+
+	if(limit!=table->len)
+	    limit+=offset;
+
+        //num=arg+1
+        for(idx=offset;idx<limit;idx++)
+            print_projection(get_User(table, idx),format,num);
+    }
+
+    cmd->type = SELECT_CMD;
+    return table->len;
+}
+
+///
+/// Show the help messages
+///
+void print_help_msg() {
+    const char msg[] = "# Supported Commands\n"
+    "\n"
+    "## Built-in Commands\n"
+    "\n"
+    "  * .exit\n"
+    "\tThis cmd archives the table, if the db file is specified, then exit.\n"
+    "\n"
+    "  * .output\n"
+    "\tThis cmd change the output strategy, default is stdout.\n"
+    "\n"
+    "\tUsage:\n"
+    "\t    .output (<file>|stdout)\n\n"
+    "\tThe results will be redirected to <file> if specified, otherwise they will display to stdout.\n"
+    "\n"
+    "  * .load\n"
+    "\tThis command loads records stored in <DB file>.\n"
+    "\n"
+    "\t*** Warning: This command will overwrite the records already stored in current table. ***\n"
+    "\n"
+    "\tUsage:\n"
+    "\t    .load <DB file>\n\n"
+    "\n"
+    "  * .help\n"
+    "\tThis cmd displays the help messages.\n"
+    "\n"
+    "## Query Commands\n"
+    "\n"
+    "  * insert\n"
+    "\tThis cmd inserts one user record into table.\n"
+    "\n"
+    "\tUsage:\n"
+    "\t    insert <id> <name> <email> <age>\n"
+    "\n"
+    "\t** Notice: The <name> & <email> are string without any whitespace character, and maximum length of them is 255. **\n"
+    "\n"
+    "  * select\n"
+    "\tThis cmd will display all user records in the table.\n"
+    "\n";
+    printf("%s", msg);
+}
+
